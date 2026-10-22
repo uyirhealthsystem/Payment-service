@@ -100,6 +100,9 @@ X-Payment-Signature: hex(HMAC-SHA256(webhookSecret, timestamp + "." + rawBody))
 
 ## Adding a new module (e.g. doctor appointments)
 
+Step-by-step guide for module developers, with signature-check code in Java, Node and Python:
+[docs/IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md).
+
 1. **Here:** register it in `application.properties`. The key is the `referenceType` the module will send.
    `DOCTOR_APPOINTMENT`, `LAB_SCAN_BOOKING` and `HOME_CARE_BOOKING` are already listed and only need env vars:
    ```properties
