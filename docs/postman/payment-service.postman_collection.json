@@ -1,0 +1,2159 @@
+{
+  "info": {
+    "name": "Payment Service",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "One payment service for every module (ambulance, doctor appointments, lab/scan, home care), backed by Razorpay. See README.md.\n\nSETUP\n1. Import this collection and one environment: \"local\" (service on :8083) or \"via gateway\" (:8080).\n2. Tokens: this service only verifies JWTs. Locally (profile \"local\") mint them with this repo's dev key:\n     node scripts/dev-jwt.mjs patient-42 PATIENT   -> patientToken   (patientId must be the same: patient-42)\n     node scripts/dev-jwt.mjs patient-99 PATIENT   -> otherPatientToken\n     node scripts/dev-jwt.mjs admin-1 ADMIN        -> adminToken\n   Otherwise log in through the auth service. Dev tokens last 12 h.\n3. Start the service so checkouts wait for the (simulated) Razorpay webhook:\n     PAYMENT_MOCK_AUTO_PAY=false ./mvnw spring-boot:run \"-Dspring-boot.run.profiles=local\"\n\nRUN\nFolders 1-4 run top to bottom in the Collection Runner (deselect 5 and 7 unless their variables are set). Requests marked [Simulate Razorpay] sign events with razorpayWebhookSecret exactly as Razorpay does, because Razorpay cannot reach localhost. Against real Razorpay (test mode), pay on the checkoutUrl with a test card and use \"Refresh from Razorpay\" instead.\n\nAUTH\nCollection default: Bearer {{patientToken}}. The refunds folder uses {{adminToken}}. Webhooks and ops use no token; folder 7 uses Basic auth with the Razorpay API key."
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{patientToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "bookingId",
+      "value": ""
+    },
+    {
+      "key": "paymentId",
+      "value": ""
+    },
+    {
+      "key": "checkoutUrl",
+      "value": ""
+    },
+    {
+      "key": "sessionId",
+      "value": ""
+    },
+    {
+      "key": "refundId",
+      "value": ""
+    },
+    {
+      "key": "failBookingId",
+      "value": ""
+    },
+    {
+      "key": "failpaymentId",
+      "value": ""
+    },
+    {
+      "key": "failcheckoutUrl",
+      "value": ""
+    },
+    {
+      "key": "failsessionId",
+      "value": ""
+    },
+    {
+      "key": "razorpayBody",
+      "value": ""
+    },
+    {
+      "key": "razorpaySignature",
+      "value": ""
+    },
+    {
+      "key": "razorpayEventId",
+      "value": ""
+    },
+    {
+      "key": "moduleBody",
+      "value": ""
+    },
+    {
+      "key": "moduleTimestamp",
+      "value": ""
+    },
+    {
+      "key": "moduleSignature",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Pay for a booking (happy path)",
+      "description": "The flow every module (ambulance, appointments, ...) goes through. Run in order.\n\nLocally, start the service with PAYMENT_MOCK_AUTO_PAY=false, so the checkout stays PENDING until step 5 simulates Razorpay's webhook. With the default auto-pay, step 1 already returns PAID.",
+      "item": [
+        {
+          "name": "1. Create payment (intent)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// a fresh booking every run",
+                  "pm.collectionVariables.set(\"bookingId\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "{",
+                  "  const saved = pm.response.json();",
+                  "  pm.collectionVariables.set(\"paymentId\", saved.id);",
+                  "  pm.collectionVariables.set(\"checkoutUrl\", saved.checkoutUrl || \"\");",
+                  "  // mock checkout URLs end with the session id (real Razorpay short URLs do not; webhooks then match by notes.payment_id)",
+                  "  pm.collectionVariables.set(\"sessionId\", saved.checkoutUrl ? saved.checkoutUrl.split(\"/\").pop() : \"\");",
+                  "}",
+                  "const d = pm.response.json();",
+                  "pm.test(\"PENDING with a checkout URL\", () => {",
+                  "  pm.expect(d.status).to.eql(\"PENDING\");",
+                  "  pm.expect(d.checkoutUrl).to.be.a(\"string\");",
+                  "});",
+                  "pm.test(\"amount and reference echoed\", () => {",
+                  "  pm.expect(Number(d.amount)).to.eql(Number(pm.variables.get(\"amount\")));",
+                  "  pm.expect(d.referenceId).to.eql(pm.collectionVariables.get(\"bookingId\"));",
+                  "});",
+                  "if (d.status === \"PAID\") console.warn(\"Mock auto-pay is on: restart with PAYMENT_MOCK_AUTO_PAY=false to walk through the webhook steps.\");"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "ambulance-booking-{{bookingId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "intents"
+              ]
+            },
+            "description": "What a module calls with the payer's token. Idempotency-Key = one payment per booking: retries and double taps return the same payment. Send the user to checkoutUrl.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"referenceType\": \"AMBULANCE_BOOKING\",\n  \"referenceId\": \"{{bookingId}}\",\n  \"payerId\": \"{{patientId}}\",\n  \"amount\": {{amount}},\n  \"currency\": \"INR\",\n  \"description\": \"Ambulance ride {{bookingId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "2. Same request again (idempotent retry)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json();",
+                  "pm.test(\"same payment\", () => pm.expect(d.id).to.eql(pm.collectionVariables.get(\"paymentId\")));",
+                  "pm.test(\"same checkout\", () => pm.expect(d.checkoutUrl || \"\").to.eql(pm.collectionVariables.get(\"checkoutUrl\")));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "ambulance-booking-{{bookingId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "intents"
+              ]
+            },
+            "description": "Same Idempotency-Key: same payment and the same checkout URL. No second Razorpay payment link.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"referenceType\": \"AMBULANCE_BOOKING\",\n  \"referenceId\": \"{{bookingId}}\",\n  \"payerId\": \"{{patientId}}\",\n  \"amount\": {{amount}},\n  \"currency\": \"INR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "3. Get payment",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"found\", () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get(\"paymentId\")));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{paymentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "{{paymentId}}"
+              ]
+            },
+            "description": "Payer or ADMIN. Anyone else gets 404."
+          }
+        },
+        {
+          "name": "4. Payments of a booking",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"one payment\", () => pm.expect(pm.response.json()).to.have.lengthOf(1));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments?referenceType=AMBULANCE_BOOKING&referenceId={{bookingId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments"
+              ],
+              "query": [
+                {
+                  "key": "referenceType",
+                  "value": "AMBULANCE_BOOKING"
+                },
+                {
+                  "key": "referenceId",
+                  "value": "{{bookingId}}"
+                }
+              ]
+            },
+            "description": "For a module or the app to find the payment of a booking. Non-admins see only their own."
+          }
+        },
+        {
+          "name": "5. [Simulate Razorpay] payment_link.paid",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Builds and signs the event the way Razorpay does (the body must be sent byte-for-byte as signed).",
+                  "const paise = Math.round(Number(pm.variables.get(\"amount\")) * 100);",
+                  "const body = JSON.stringify({",
+                  "  entity: \"event\",",
+                  "  account_id: \"acc_simulated\",",
+                  "  event: \"payment_link.paid\",",
+                  "  contains: [\"payment_link\",\"payment\"],",
+                  "  payload: {",
+                  "    payment_link: { entity: {",
+                  "      id: pm.collectionVariables.get(\"sessionId\"),",
+                  "      entity: \"payment_link\",",
+                  "      amount: paise,",
+                  "      amount_paid: paise,",
+                  "      currency: \"INR\",",
+                  "      status: \"paid\",",
+                  "      notes: { payment_id: pm.collectionVariables.get(\"paymentId\"), reference_type: \"AMBULANCE_BOOKING\" }",
+                  "    } },",
+                  "    payment: { entity: {",
+                  "      id: \"pay_\" + Date.now(),",
+                  "      entity: \"payment\",",
+                  "      amount: paise,",
+                  "      currency: \"INR\",",
+                  "      status: \"captured\",",
+                  "      method: \"upi\"",
+                  "    } }",
+                  "  },",
+                  "  created_at: Math.floor(Date.now() / 1000)",
+                  "});",
+                  "pm.collectionVariables.set(\"razorpayBody\", body);",
+                  "pm.collectionVariables.set(\"razorpayEventId\", \"evt_\" + Date.now() + Math.floor(Math.random() * 1000));",
+                  "pm.collectionVariables.set(\"razorpaySignature\",",
+                  "  CryptoJS.HmacSHA256(body, pm.variables.get(\"razorpayWebhookSecret\")).toString(CryptoJS.enc.Hex));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Razorpay-Signature",
+                "value": "{{razorpaySignature}}"
+              },
+              {
+                "key": "X-Razorpay-Event-Id",
+                "value": "{{razorpayEventId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/webhooks/razorpay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "webhooks",
+                "razorpay"
+              ]
+            },
+            "description": "Stands in for Razorpay calling us (Razorpay cannot reach localhost). Signed with razorpayWebhookSecret, which must equal the service's RAZORPAY_WEBHOOK_SECRET (local profile default: local-razorpay-webhook-secret).\n\nThe service marks the payment PAID and queues the signed callback to the module (AMBULANCE_BOOKING -> ambulance service). If the ambulance service is not running, the log shows the callback being retried.",
+            "body": {
+              "mode": "raw",
+              "raw": "{{razorpayBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "6. Razorpay retries the same event (deduplicated)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Razorpay-Signature",
+                "value": "{{razorpaySignature}}"
+              },
+              {
+                "key": "X-Razorpay-Event-Id",
+                "value": "{{razorpayEventId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/webhooks/razorpay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "webhooks",
+                "razorpay"
+              ]
+            },
+            "description": "Byte-for-byte the event from step 5 (same X-Razorpay-Event-Id). Accepted with 200, applied only once.",
+            "body": {
+              "mode": "raw",
+              "raw": "{{razorpayBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "7. Get payment (now PAID)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json();",
+                  "pm.test(\"PAID\", () => pm.expect(d.status).to.eql(\"PAID\"));",
+                  "pm.test(\"no checkout any more\", () => pm.expect(d.checkoutUrl).to.eql(null));",
+                  "pm.test(\"paidAt set\", () => pm.expect(d.paidAt).to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{paymentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "{{paymentId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "8. Pay again (returns the PAID payment)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"PAID\", () => pm.expect(pm.response.json().status).to.eql(\"PAID\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "ambulance-booking-{{bookingId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "intents"
+              ]
+            },
+            "description": "Calling intents for a paid booking is harmless: it returns PAID, no new checkout.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"referenceType\": \"AMBULANCE_BOOKING\",\n  \"referenceId\": \"{{bookingId}}\",\n  \"payerId\": \"{{patientId}}\",\n  \"amount\": {{amount}},\n  \"currency\": \"INR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "9. Refresh from Razorpay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{paymentId}}/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "{{paymentId}}",
+                "refresh"
+              ]
+            },
+            "description": "The app calls this when the user returns from the checkout page, instead of waiting for Razorpay's webhook. Asks Razorpay about any open checkout and returns the current state."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Refunds (ADMIN)",
+      "description": "Refund the payment from folder 1. Needs adminToken (role ADMIN or SUPER_ADMIN).",
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{adminToken}}",
+            "type": "string"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "1. Partial refund",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 201\", () => pm.response.to.have.status(201));",
+                  "const d = pm.response.json();",
+                  "pm.collectionVariables.set(\"refundId\", d.id);",
+                  "pm.test(\"refund created\", () => pm.expect([\"SUCCEEDED\", \"PENDING\"]).to.include(d.status));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{paymentId}}/refunds",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "{{paymentId}}",
+                "refunds"
+              ]
+            },
+            "description": "reason: DUPLICATE | FRAUDULENT | REQUESTED_BY_CUSTOMER | OTHERS. With Razorpay the refund usually comes back PENDING and settles later via the refund.processed webhook.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 200,\n  \"reason\": \"REQUESTED_BY_CUSTOMER\",\n  \"note\": \"Trip cancelled halfway\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "2. Refund more than is left (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 409\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{paymentId}}/refunds",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "{{paymentId}}",
+                "refunds"
+              ]
+            },
+            "description": "Refunds (pending + succeeded) can never exceed what was paid.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 99999,\n  \"reason\": \"REQUESTED_BY_CUSTOMER\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "3. [Simulate Razorpay] refund.processed",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Builds and signs the event the way Razorpay does (the body must be sent byte-for-byte as signed).",
+                  "const paise = Math.round(Number(pm.variables.get(\"amount\")) * 100);",
+                  "const body = JSON.stringify({",
+                  "  entity: \"event\",",
+                  "  account_id: \"acc_simulated\",",
+                  "  event: \"refund.processed\",",
+                  "  contains: [\"refund\"],",
+                  "  payload: {",
+                  "    refund: { entity: {",
+                  "      id: \"rfnd_\" + Date.now(),",
+                  "      entity: \"refund\",",
+                  "      amount: 20000,",
+                  "      currency: \"INR\",",
+                  "      payment_id: \"pay_simulated\",",
+                  "      status: \"processed\",",
+                  "      notes: { refund_id: pm.collectionVariables.get(\"refundId\") }",
+                  "    } }",
+                  "  },",
+                  "  created_at: Math.floor(Date.now() / 1000)",
+                  "});",
+                  "pm.collectionVariables.set(\"razorpayBody\", body);",
+                  "pm.collectionVariables.set(\"razorpayEventId\", \"evt_\" + Date.now() + Math.floor(Math.random() * 1000));",
+                  "pm.collectionVariables.set(\"razorpaySignature\",",
+                  "  CryptoJS.HmacSHA256(body, pm.variables.get(\"razorpayWebhookSecret\")).toString(CryptoJS.enc.Hex));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Razorpay-Signature",
+                "value": "{{razorpaySignature}}"
+              },
+              {
+                "key": "X-Razorpay-Event-Id",
+                "value": "{{razorpayEventId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/webhooks/razorpay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "webhooks",
+                "razorpay"
+              ]
+            },
+            "description": "What Razorpay sends when a PENDING refund completes. Matched by our refund id in notes. Harmless if the refund already SUCCEEDED.",
+            "body": {
+              "mode": "raw",
+              "raw": "{{razorpayBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "4. Refund the rest (no amount = everything left)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 201\", () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{paymentId}}/refunds",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "{{paymentId}}",
+                "refunds"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"OTHERS\",\n  \"note\": \"Remaining amount\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "5. Get payment (refunds listed)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json();",
+                  "pm.test(\"still PAID\", () => pm.expect(d.status).to.eql(\"PAID\"));",
+                  "pm.test(\"two refunds\", () => pm.expect(d.refunds).to.have.lengthOf(2));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{paymentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "{{paymentId}}"
+              ]
+            },
+            "description": "Status stays PAID. Refunds show in refundedAmount and refunds[].",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{patientToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "6. Patient cannot refund (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{paymentId}}/refunds",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "{{paymentId}}",
+                "refunds"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 1,\n  \"reason\": \"REQUESTED_BY_CUSTOMER\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{patientToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Expired checkout and retry",
+      "description": "The user leaves the checkout page unpaid until the link expires; calling intents again gives a fresh checkout for the same payment. (A failed attempt does not end a Razorpay link: the user retries on the same page.) Needs PAYMENT_MOCK_AUTO_PAY=false locally.",
+      "item": [
+        {
+          "name": "1. Create payment",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"failBookingId\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "{",
+                  "  const saved = pm.response.json();",
+                  "  pm.collectionVariables.set(\"failpaymentId\", saved.id);",
+                  "  pm.collectionVariables.set(\"failcheckoutUrl\", saved.checkoutUrl || \"\");",
+                  "  // mock checkout URLs end with the session id (real Razorpay short URLs do not; webhooks then match by notes.payment_id)",
+                  "  pm.collectionVariables.set(\"failsessionId\", saved.checkoutUrl ? saved.checkoutUrl.split(\"/\").pop() : \"\");",
+                  "}",
+                  "pm.test(\"PENDING\", () => pm.expect(pm.response.json().status).to.eql(\"PENDING\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "ambulance-booking-{{failBookingId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"referenceType\": \"AMBULANCE_BOOKING\",\n  \"referenceId\": \"{{failBookingId}}\",\n  \"payerId\": \"{{patientId}}\",\n  \"amount\": {{amount}},\n  \"currency\": \"INR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "2. [Simulate Razorpay] payment_link.expired",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Builds and signs the event the way Razorpay does (the body must be sent byte-for-byte as signed).",
+                  "const paise = Math.round(Number(pm.variables.get(\"amount\")) * 100);",
+                  "const body = JSON.stringify({",
+                  "  entity: \"event\",",
+                  "  account_id: \"acc_simulated\",",
+                  "  event: \"payment_link.expired\",",
+                  "  contains: [\"payment_link\"],",
+                  "  payload: {",
+                  "    payment_link: { entity: {",
+                  "      id: pm.collectionVariables.get(\"failsessionId\"),",
+                  "      entity: \"payment_link\",",
+                  "      amount: paise,",
+                  "      amount_paid: 0,",
+                  "      currency: \"INR\",",
+                  "      status: \"expired\",",
+                  "      notes: { payment_id: pm.collectionVariables.get(\"failpaymentId\"), reference_type: \"AMBULANCE_BOOKING\" }",
+                  "    } }",
+                  "  },",
+                  "  created_at: Math.floor(Date.now() / 1000)",
+                  "});",
+                  "pm.collectionVariables.set(\"razorpayBody\", body);",
+                  "pm.collectionVariables.set(\"razorpayEventId\", \"evt_\" + Date.now() + Math.floor(Math.random() * 1000));",
+                  "pm.collectionVariables.set(\"razorpaySignature\",",
+                  "  CryptoJS.HmacSHA256(body, pm.variables.get(\"razorpayWebhookSecret\")).toString(CryptoJS.enc.Hex));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Razorpay-Signature",
+                "value": "{{razorpaySignature}}"
+              },
+              {
+                "key": "X-Razorpay-Event-Id",
+                "value": "{{razorpayEventId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/webhooks/razorpay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "webhooks",
+                "razorpay"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{razorpayBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "3. Get payment (PENDING, no checkout)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json();",
+                  "pm.test(\"PENDING\", () => pm.expect(d.status).to.eql(\"PENDING\"));",
+                  "pm.test(\"no checkout\", () => pm.expect(d.checkoutUrl).to.eql(null));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{failpaymentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "{{failpaymentId}}"
+              ]
+            },
+            "description": "Still owed, so the module is not called. The checkout is gone until the user tries again."
+          }
+        },
+        {
+          "name": "4. Cannot refund an unpaid payment (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 409\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{failpaymentId}}/refunds",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "{{failpaymentId}}",
+                "refunds"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"OTHERS\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "5. Try again (same key, fresh checkout)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const d = pm.response.json();",
+                  "pm.test(\"same payment\", () => pm.expect(d.id).to.eql(pm.collectionVariables.get(\"failpaymentId\")));",
+                  "pm.test(\"PENDING again\", () => pm.expect(d.status).to.eql(\"PENDING\"));",
+                  "pm.test(\"new checkout URL\", () => pm.expect(d.checkoutUrl).to.not.eql(pm.collectionVariables.get(\"failcheckoutUrl\")));",
+                  "pm.collectionVariables.set(\"failsessionId\", d.checkoutUrl.split(\"/\").pop());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "ambulance-booking-{{failBookingId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"referenceType\": \"AMBULANCE_BOOKING\",\n  \"referenceId\": \"{{failBookingId}}\",\n  \"payerId\": \"{{patientId}}\",\n  \"amount\": {{amount}},\n  \"currency\": \"INR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "6. [Simulate Razorpay] payment_link.paid on the retry",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Builds and signs the event the way Razorpay does (the body must be sent byte-for-byte as signed).",
+                  "const paise = Math.round(Number(pm.variables.get(\"amount\")) * 100);",
+                  "const body = JSON.stringify({",
+                  "  entity: \"event\",",
+                  "  account_id: \"acc_simulated\",",
+                  "  event: \"payment_link.paid\",",
+                  "  contains: [\"payment_link\",\"payment\"],",
+                  "  payload: {",
+                  "    payment_link: { entity: {",
+                  "      id: pm.collectionVariables.get(\"failsessionId\"),",
+                  "      entity: \"payment_link\",",
+                  "      amount: paise,",
+                  "      amount_paid: paise,",
+                  "      currency: \"INR\",",
+                  "      status: \"paid\",",
+                  "      notes: { payment_id: pm.collectionVariables.get(\"failpaymentId\"), reference_type: \"AMBULANCE_BOOKING\" }",
+                  "    } },",
+                  "    payment: { entity: {",
+                  "      id: \"pay_\" + Date.now(),",
+                  "      entity: \"payment\",",
+                  "      amount: paise,",
+                  "      currency: \"INR\",",
+                  "      status: \"captured\",",
+                  "      method: \"upi\"",
+                  "    } }",
+                  "  },",
+                  "  created_at: Math.floor(Date.now() / 1000)",
+                  "});",
+                  "pm.collectionVariables.set(\"razorpayBody\", body);",
+                  "pm.collectionVariables.set(\"razorpayEventId\", \"evt_\" + Date.now() + Math.floor(Math.random() * 1000));",
+                  "pm.collectionVariables.set(\"razorpaySignature\",",
+                  "  CryptoJS.HmacSHA256(body, pm.variables.get(\"razorpayWebhookSecret\")).toString(CryptoJS.enc.Hex));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Razorpay-Signature",
+                "value": "{{razorpaySignature}}"
+              },
+              {
+                "key": "X-Razorpay-Event-Id",
+                "value": "{{razorpayEventId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/webhooks/razorpay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "webhooks",
+                "razorpay"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{razorpayBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "7. Get payment (PAID)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"PAID\", () => pm.expect(pm.response.json().status).to.eql(\"PAID\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{failpaymentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "{{failpaymentId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Validation and security",
+      "description": "Each request shows one rule. Uses the booking from folder 1 where needed.",
+      "item": [
+        {
+          "name": "Missing Idempotency-Key (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"referenceType\": \"AMBULANCE_BOOKING\",\n  \"referenceId\": \"{{$guid}}\",\n  \"payerId\": \"{{patientId}}\",\n  \"amount\": {{amount}},\n  \"currency\": \"INR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Unknown referenceType (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "postman-{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "intents"
+              ]
+            },
+            "description": "Only modules registered in payment.consumers can take payments.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"referenceType\": \"PIZZA_ORDER\",\n  \"referenceId\": \"{{$guid}}\",\n  \"payerId\": \"{{patientId}}\",\n  \"amount\": {{amount}},\n  \"currency\": \"INR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Paying on someone else's behalf (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "postman-{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "intents"
+              ]
+            },
+            "description": "payerId must be the token's sub (unless the caller is an admin).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"referenceType\": \"AMBULANCE_BOOKING\",\n  \"referenceId\": \"{{$guid}}\",\n  \"payerId\": \"another-user\",\n  \"amount\": {{amount}},\n  \"currency\": \"INR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Amount below 1.00 (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "postman-{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"referenceType\": \"AMBULANCE_BOOKING\",\n  \"referenceId\": \"{{$guid}}\",\n  \"payerId\": \"{{patientId}}\",\n  \"amount\": 0.50,\n  \"currency\": \"INR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "More than 2 decimals (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "postman-{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"referenceType\": \"AMBULANCE_BOOKING\",\n  \"referenceId\": \"{{$guid}}\",\n  \"payerId\": \"{{patientId}}\",\n  \"amount\": 10.005,\n  \"currency\": \"INR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Unsupported currency (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "postman-{{$guid}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"referenceType\": \"AMBULANCE_BOOKING\",\n  \"referenceId\": \"{{$guid}}\",\n  \"payerId\": \"{{patientId}}\",\n  \"amount\": {{amount}},\n  \"currency\": \"USD\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Same key, different amount (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 409\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "ambulance-booking-{{bookingId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "intents"
+              ]
+            },
+            "description": "An Idempotency-Key is bound to its first request forever.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"referenceType\": \"AMBULANCE_BOOKING\",\n  \"referenceId\": \"{{bookingId}}\",\n  \"payerId\": \"{{patientId}}\",\n  \"amount\": 1.00,\n  \"currency\": \"INR\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "No token (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 401\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{paymentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "{{paymentId}}"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "Someone else's payment (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 404\", () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/{{paymentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "{{paymentId}}"
+              ]
+            },
+            "description": "Looks exactly like a payment that does not exist. Needs otherPatientToken (a PATIENT token with a different sub).",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{otherPatientToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Unknown payment (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 404\", () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/00000000-0000-0000-0000-000000000000",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "00000000-0000-0000-0000-000000000000"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Razorpay webhook with a bad signature (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 401\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Razorpay-Signature",
+                "value": "deadbeef"
+              },
+              {
+                "key": "X-Razorpay-Event-Id",
+                "value": "evt_bad"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/webhooks/razorpay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "webhooks",
+                "razorpay"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"entity\": \"event\",\n  \"event\": \"payment_link.paid\",\n  \"payload\": {}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "Razorpay webhook without a signature (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 401\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/payments/webhooks/razorpay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "payments",
+                "webhooks",
+                "razorpay"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"entity\": \"event\",\n  \"event\": \"payment_link.paid\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Module side: test your module's callback endpoint",
+      "description": "Calls a MODULE (not this service) exactly the way the payment service does, so you can test a module's webhook handler on its own. Signed with moduleWebhookSecret, which must equal the module's PAYMENT_WEBHOOK_SECRET and this service's <MODULE>_PAYMENT_WEBHOOK_SECRET.\n\nHeader scheme: X-Payment-Timestamp = epoch seconds, X-Payment-Signature = hex(HMAC-SHA256(secret, timestamp + \".\" + rawBody)).",
+      "item": [
+        {
+          "name": "Callback: PAID",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const booking = pm.variables.get(\"moduleBookingId\") || pm.variables.replaceIn(\"{{$guid}}\");",
+                  "const body = JSON.stringify({",
+                  "  paymentId: pm.variables.replaceIn(\"{{$guid}}\"),",
+                  "  referenceType: \"AMBULANCE_BOOKING\",",
+                  "  referenceId: booking,",
+                  "  bookingId: booking,",
+                  "  payerId: pm.variables.get(\"patientId\"),",
+                  "  status: \"PAID\",",
+                  "  amount: Number(pm.variables.get(\"amount\")),",
+                  "  currency: \"INR\",",
+                  "  refundedAmount: 0,",
+                  "  failureReason: null,",
+                  "  occurredAt: new Date().toISOString()",
+                  "});",
+                  "const ts = String(Math.floor(Date.now() / 1000));",
+                  "pm.collectionVariables.set(\"moduleBody\", body);",
+                  "pm.collectionVariables.set(\"moduleTimestamp\", ts);",
+                  "pm.collectionVariables.set(\"moduleSignature\",",
+                  "  CryptoJS.HmacSHA256(ts + \".\" + body, pm.variables.get(\"moduleWebhookSecret\")).toString(CryptoJS.enc.Hex));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"signature accepted (not 401)\", () => pm.expect(pm.response.code).to.not.eql(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Payment-Timestamp",
+                "value": "{{moduleTimestamp}}"
+              },
+              {
+                "key": "X-Payment-Signature",
+                "value": "{{moduleSignature}}"
+              }
+            ],
+            "url": {
+              "raw": "{{moduleWebhookUrl}}",
+              "host": [
+                "{{moduleWebhookUrl}}"
+              ],
+              "path": []
+            },
+            "description": "For the ambulance service, bookingId must be a booking in PAYMENT_PENDING whose fare is <= amount, or it answers 404/409. Set moduleBookingId and amount first.",
+            "body": {
+              "mode": "raw",
+              "raw": "{{moduleBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Ops",
+      "description": "Kubernetes probes, metrics and API docs. No token needed.",
+      "item": [
+        {
+          "name": "Liveness",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/health/liveness",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "health",
+                "liveness"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "Readiness (includes DB)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/health/readiness",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "health",
+                "readiness"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "Prometheus metrics",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/prometheus",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "prometheus"
+              ]
+            },
+            "description": "Alert on payments_anomalies_total and payments_callbacks_total{outcome=\"dead\"}. Not exposed through the gateway.",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "OpenAPI spec",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v3/api-docs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v3",
+                "api-docs"
+              ]
+            },
+            "description": "Swagger UI: {{baseUrl}}/swagger-ui.html",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Razorpay direct (setup and debugging)",
+      "description": "Talks to Razorpay itself, not to this service, to check that the API keys work. Basic auth with razorpayKeyId / razorpayKeySecret (use test-mode keys, rzp_test_...). Skip this folder in the Collection Runner unless the razorpay* variables are set.",
+      "auth": {
+        "type": "basic",
+        "basic": [
+          {
+            "key": "username",
+            "value": "{{razorpayKeyId}}",
+            "type": "string"
+          },
+          {
+            "key": "password",
+            "value": "{{razorpayKeySecret}}",
+            "type": "string"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "1. Create a ₹1 payment link",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));",
+                  "const l = pm.response.json();",
+                  "pm.test(\"link created\", () => pm.expect(l.id).to.be.a(\"string\"));",
+                  "pm.environment.set(\"razorpayLinkId\", l.id);",
+                  "console.log(\"Hosted checkout:\", l.short_url);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{razorpayApiUrl}}/payment_links",
+              "host": [
+                "{{razorpayApiUrl}}"
+              ],
+              "path": [
+                "payment_links"
+              ]
+            },
+            "description": "What the service does for every checkout. The test prints the hosted checkout URL; open it to pay with a Razorpay test card or UPI id.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 100,\n  \"currency\": \"INR\",\n  \"description\": \"Postman credential check\",\n  \"notes\": {\n    \"payment_id\": \"postman-check\"\n  },\n  \"notify\": {\n    \"sms\": false,\n    \"email\": false\n  },\n  \"reminder_enable\": false,\n  \"callback_url\": \"https://example.com/payments/result\",\n  \"callback_method\": \"get\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "2. Get a payment link",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status is 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{razorpayApiUrl}}/payment_links/{{razorpayLinkId}}",
+              "host": [
+                "{{razorpayApiUrl}}"
+              ],
+              "path": [
+                "payment_links",
+                "{{razorpayLinkId}}"
+              ]
+            },
+            "description": "What reconciliation asks for checkouts whose webhook never arrived."
+          }
+        }
+      ]
+    }
+  ]
+}

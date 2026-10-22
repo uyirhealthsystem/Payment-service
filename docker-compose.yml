@@ -1,0 +1,65 @@
+
+services:
+  payment-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: uyir-payment-service
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:8082:8082"
+
+    environment:
+      # Application
+      PORT: "8082"
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-}
+
+      # Dedicated PostgreSQL database and role
+      DB_URL: jdbc:postgresql://uyir-postgres:5432/uyir_payment
+      DB_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      DB_PASS: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+
+      # Gateway authentication
+      PAYMENT_GATEWAY_SECRET: ${PAYMENT_GATEWAY_SECRET:?Set PAYMENT_GATEWAY_SECRET in .env}
+      # Bearer JWTs from callers that skip the gateway (hospital-service) are verified against this
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:?Set AUTH_JWKS_URL in .env}
+
+      # Razorpay
+      PAYMENT_PROVIDER: razorpay
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:?Set RAZORPAY_KEY_ID in .env}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:?Set RAZORPAY_KEY_SECRET in .env}
+      # the secret entered when the webhook was added in Razorpay Dashboard > Accounts & Settings > Webhooks
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:?Set RAZORPAY_WEBHOOK_SECRET in .env}
+      # true only with live keys (rzp_live_...); startup refuses a key that does not match
+      RAZORPAY_LIVE: ${RAZORPAY_LIVE:-false}
+      RAZORPAY_ACCOUNT_ID: ${RAZORPAY_ACCOUNT_ID:-}
+      # where the browser lands after paying on Razorpay's page (same default as the root docker-compose.yml)
+      CHECKOUT_SUCCESS_URL: ${CHECKOUT_SUCCESS_URL:-http://localhost:5173/payments/result}
+
+      # Hospital seat-payment callback
+      HOSPITAL_SEAT_PAYMENT_WEBHOOK_URL: ${HOSPITAL_SEAT_PAYMENT_WEBHOOK_URL:-http://uyir-hospital-service:8081/api/v1/hospital/seats/payments/webhook}
+      HOSPITAL_SEAT_PAYMENT_WEBHOOK_SECRET: ${HOSPITAL_SEAT_PAYMENT_WEBHOOK_SECRET:?Set HOSPITAL_SEAT_PAYMENT_WEBHOOK_SECRET in .env}
+
+    # Readiness probe (app up + DB reachable); the image has no curl/wget, so bash /dev/tcp does the HTTP call
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - |-
+          exec 3<>/dev/tcp/127.0.0.1/8082 && printf 'GET /actuator/health/readiness HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 && timeout 3 cat <&3 | grep -q '"status":"UP"'
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+      start_interval: 2s
+
+    networks:
+      - uyir-backend
+
+networks:
+  uyir-backend:
+    external: true
+    name: uyir-backend
