@@ -147,6 +147,7 @@ class PaymentFlowIT {
         JsonNode callback = CALLBACKS.poll(10, TimeUnit.SECONDS);
         assertThat(callback).as("module callback").isNotNull();
         // exactly the fields the ambulance service's PaymentWebhook record reads
+        assertThat(UUID.fromString(callback.get("eventId").asString())).isNotNull();
         assertThat(callback.get("paymentId").asString()).isEqualTo(paymentId);
         assertThat(callback.get("bookingId").asString()).isEqualTo(booking);
         assertThat(callback.get("status").asString()).isEqualTo("PAID");

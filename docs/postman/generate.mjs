@@ -357,7 +357,8 @@ const moduleSide = folder('5. Module side: test your module\'s callback endpoint
       json: '{{moduleBody}}',
       pre: [`const booking = pm.variables.get("moduleBookingId") || pm.variables.replaceIn("{{$guid}}");
 const body = JSON.stringify({
-  paymentId: pm.variables.replaceIn("{{$guid}}"),
+  eventId: pm.variables.replaceIn("{{$guid}}"),
+  paymentId:pm.variables.replaceIn("{{$guid}}"),
   referenceType: "AMBULANCE_BOOKING",
   referenceId: booking,
   bookingId: booking,

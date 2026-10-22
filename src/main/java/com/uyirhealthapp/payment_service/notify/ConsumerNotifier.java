@@ -10,6 +10,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.UUID;
 
 /**
  * Queues "payment X is now PAID / FAILED" for the module that owns it. Joins the caller's transaction, so the
@@ -40,7 +41,7 @@ public class ConsumerNotifier {
             return;
         }
         Instant now = clock.instant();
-        PaymentEvent event = new PaymentEvent(p.getId(), p.getReferenceType(), p.getReferenceId(),
+        PaymentEvent event = new PaymentEvent(UUID.randomUUID(), p.getId(),p.getReferenceType(), p.getReferenceId(),
                 p.getReferenceId(), p.getPayerId(), p.getStatus(), p.getAmount(), p.getCurrency(),
                 p.getRefundedAmount(), p.getFailureReason(), now);
         WebhookDelivery d = new WebhookDelivery();
