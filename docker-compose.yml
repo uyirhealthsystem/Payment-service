@@ -42,6 +42,11 @@ services:
       HOSPITAL_SEAT_PAYMENT_WEBHOOK_URL: ${HOSPITAL_SEAT_PAYMENT_WEBHOOK_URL:-http://uyir-hospital-service:8081/api/v1/hospital/seats/payments/webhook}
       HOSPITAL_SEAT_PAYMENT_WEBHOOK_SECRET: ${HOSPITAL_SEAT_PAYMENT_WEBHOOK_SECRET:?Set HOSPITAL_SEAT_PAYMENT_WEBHOOK_SECRET in .env}
 
+      # Teleconsultation (TCS) payment callback; TELECONSULTATION payments are refused until the URL is set
+      TELECONSULT_PAYMENT_WEBHOOK_URL: ${TELECONSULT_PAYMENT_WEBHOOK_URL:-}
+      TELECONSULT_PAYMENT_WEBHOOK_SECRET: ${TELECONSULT_PAYMENT_WEBHOOK_SECRET:-}
+      TELECONSULT_PAYMENT_RETURN_URL: ${TELECONSULT_PAYMENT_RETURN_URL:-}
+
     # Readiness probe (app up + DB reachable); the image has no curl/wget, so bash /dev/tcp does the HTTP call
     healthcheck:
       test:
