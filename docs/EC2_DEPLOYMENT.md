@@ -95,6 +95,12 @@ CHECKOUT_SUCCESS_URL=<frontend URL>/payments/result
 # Hospital seat payments -> hospital service callback (same secret as hospital's PAYMENT_WEBHOOK_SECRET)
 HOSPITAL_SEAT_PAYMENT_WEBHOOK_URL=http://<hospital server IP>:8081/api/v1/hospital/seats/payments/webhook
 HOSPITAL_SEAT_PAYMENT_WEBHOOK_SECRET=<shared secret>
+
+# Teleconsultation (TCS) appointments -> TCS callback (same secret configured on the TCS side).
+# TELECONSULTATION payments are refused until the URL is set. Return URL optional (default CHECKOUT_SUCCESS_URL).
+TELECONSULT_PAYMENT_WEBHOOK_URL=http://<tcs server IP>:<port>/api/teleconsultation/payments/webhook
+TELECONSULT_PAYMENT_WEBHOOK_SECRET=<shared secret>
+TELECONSULT_PAYMENT_RETURN_URL=
 ```
 
 ```bash
