@@ -1,0 +1,17 @@
+[Unit]
+Description=Uyir Payment Service
+After=network.target
+
+[Service]
+User=payment
+WorkingDirectory=/opt/payment
+Environment=TZ=UTC
+Environment=LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs
+ExecStart=/usr/bin/java -XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError -Duser.timezone=UTC -jar /opt/payment/app.jar
+EnvironmentFile=/opt/payment/.env
+Restart=on-failure
+RestartSec=5
+SuccessExitStatus=143
+
+[Install]
+WantedBy=multi-user.target

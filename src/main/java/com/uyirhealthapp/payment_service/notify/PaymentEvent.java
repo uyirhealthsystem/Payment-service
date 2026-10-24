@@ -12,16 +12,18 @@ import java.util.UUID;
  * <pre>
  *   X-Payment-Timestamp: 1727222400                                         (epoch seconds)
  *   X-Payment-Signature: hex(HMAC-SHA256(webhookSecret, timestamp + "." + rawBody))
- *   { "paymentId": "...", "referenceType": "AMBULANCE_BOOKING", "referenceId": "...", "bookingId": "...",
- *     "status": "PAID", "amount": 640.00, "currency": "INR", ... }
+ *   { "eventId": "...", "paymentId": "...", "referenceType": "AMBULANCE_BOOKING", "referenceId": "...",
+ *     "bookingId": "...", "status": "PAID", "amount": 640.00, "currency": "INR", ... }
  * </pre>
  *
+ * eventId: unique per event, and the same on every retry of it (the payload is stored once and resent as is), so
+ * a module can deduplicate on it.
  * bookingId: DEPRECATED alias of referenceId, kept only because existing consumers read it. New modules must
  * use referenceId; drop bookingId once no consumer reads it. Modules must check that amount covers
  * what they charge; the payer's app is what asked for the payment, so the amount is only as trustworthy as
  * the module's own check.
  */
-public record PaymentEvent(UUID paymentId, String referenceType, String referenceId, String bookingId,
+public record PaymentEvent(UUID eventId, UUID paymentId,String referenceType, String referenceId, String bookingId,
                            String payerId, PaymentStatus status, BigDecimal amount, String currency,
                            BigDecimal refundedAmount, String failureReason, Instant occurredAt) {
 }

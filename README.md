@@ -84,11 +84,12 @@ POST https://ambulance/api/ambulance/payments/webhook
 X-Payment-Timestamp: 1727222400                                          (epoch seconds)
 X-Payment-Signature: hex(HMAC-SHA256(webhookSecret, timestamp + "." + rawBody))
 
-{ "paymentId": "a936fcae-...", "referenceType": "AMBULANCE_BOOKING", "referenceId": "7f3c...",
-  "bookingId": "7f3c...", "payerId": "patient-42", "status": "PAID", "amount": 640.00, "currency": "INR",
+{ "eventId": "5d0e41b2-...", "paymentId": "a936fcae-...", "referenceType": "AMBULANCE_BOOKING",
+  "referenceId": "7f3c...", "bookingId": "7f3c...", "payerId": "patient-42", "status": "PAID", "amount": 640.00, "currency": "INR",
   "refundedAmount": 0.00, "failureReason": null, "occurredAt": "2026-09-25T08:01:12Z" }
 ```
 
+- `eventId` is unique per event and stays the same on every retry of that event, so modules can deduplicate on it.
 - `bookingId` is a **deprecated** copy of `referenceId`, kept for existing consumers. New modules read
   `referenceId`.
 - The callback comes from a transactional outbox. It is retried with backoff (10 s, 20 s, 40 s … up to 1 h,
@@ -98,6 +99,9 @@ X-Payment-Signature: hex(HMAC-SHA256(webhookSecret, timestamp + "." + rawBody))
   `amount` ≥ what it charges before it marks the booking paid.
 
 ## Adding a new module (e.g. doctor appointments)
+
+Step-by-step guide for module developers, with signature-check code in Java, Node and Python:
+[docs/IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md).
 
 1. **Here:** register it in `application.properties`. The key is the `referenceType` the module will send.
    `DOCTOR_APPOINTMENT`, `LAB_SCAN_BOOKING` and `HOME_CARE_BOOKING` are already listed and only need env vars:
